@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Room Chat · Auth + JWT + WebSocket</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 16px; }
+        .panel { border: 1px solid #dfe3ea; border-radius: 10px; padding: 16px; margin-bottom: 18px; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        input, button { padding: 10px; border-radius: 6px; border: 1px solid #ced4df; }
+        button { background: #1d5bd8; color: white; border: 0; cursor: pointer; }
+        button:disabled { opacity: .6; cursor: not-allowed; }
+        #messages { min-height: 260px; max-height: 50vh; overflow-y: auto; padding: 8px; border: 1px solid #e0e5ee; border-radius: 8px; }
+        .message { padding: 7px 0; border-bottom: 1px solid #eef1f6; }
+        .meta { color: #586174; font-size: .8rem; }
+        .error { color: #b42318; font-weight: bold; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+<h1>Room Chat</h1>
+<div class="grid">
+    <div class="panel">
+        <h3>Register / Login</h3>
+        <div>
+            <input id="username" placeholder="username" value="alice" />
+            <input id="password" type="password" placeholder="password" value="secret123" />
+            <button id="registerBtn">Register</button>
+            <button id="loginBtn">Login</button>
+        </div>
+        <p id="authResult" class="hidden"></p>
+    </div>
+    <div class="panel">
+        <h3>Room</h3>
+        <input id="roomName" value="general" maxlength="50" />
+        <button id="createRoomBtn">Create room</button>
+        <button id="joinRoomBtn">Join room</button>
+        <p id="roomStatus"></p>
+    </div>
+</div>
+<div class="panel">
+    <div id="messages"></div>
+    <div style="margin-top: 12px; display: flex; gap: 8px;">
+        <input id="sender" value="alice" placeholder="Name" />
+        <input id="content" style="flex:1" placeholder="Type a message..." />
+        <button id="sendBtn" disabled>Send</button>
+    </div>
+    <p id="wsStatus" class="meta">Connecting…</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+<script>
+    const authResult = document.getElementById('authResult');
+    const roomStatus = document.getElementById('roomStatus');
+    const wsStatus = document.getElementById('wsStatus');
+    const messages = document.getElementById('messages');
+    const senderEl = document.getElementById('sender');
+    const contentEl = document.getElementById('content');
+    const sendBtn = document.getElementById('sendBtn');
+
+    let token = '';
+    let stompClient = null;
+    let currentRoom = 'general';
+    let currentSubscription = null;
+
+    function showAuth(text, error = false) {
+        authResult.textContent = text;
+        authResult.classList.remove('hidden');
+        authResult.classList.toggle('error', error);
+    }
+
+    async function register() {
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        const response = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        if (!response.ok) {
+            showAuth('Register failed', true);
+            return;
+        }
+        showAuth('Registered');
+    }
+
+    async function login() {
+        const username = document.getElementById('username').value.trim();
+        const password = document.getElementById('password').value;
+        const response = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username, password })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            showAuth(data.message || 'Login failed', true);
+            return;
+        }
+        token = data.token;
+        senderEl.value = username;
+        showAuth('Logged in successfully');
+        connectSocket();
+    }
+
+    async function createRoom() {
+        const room = document.getElementById('roomName').value.trim();
+        const response = await fetch('/api/rooms', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + token
+            },
+            body: JSON.stringify({ name: room })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            roomStatus.textContent = 'Room creation failed';
+            return;
+        }
+        roomStatus.textContent = 'Created room: ' + data.name;
+        currentRoom = data.name;
+        joinRoom();
+    }
+
+    function joinRoom() {
+        currentRoom = document.getElementById('roomName').value.trim();
+        if (!stompClient || !stompClient.connected) {
+            roomStatus.textContent = 'Connect first';
+            return;
+        }
+        if (currentSubscription) currentSubscription.unsubscribe();
+        currentSubscription = stompClient.subscribe('/topic/rooms/' + currentRoom, frame => {
+            const message = JSON.parse(frame.body);
+            addMessage(message);
+        });
+        fetch('/api/rooms/' + encodeURIComponent(currentRoom) + '/messages', {
+            headers: { 'Authorization': 'Bearer ' + token }
+        }).then(r => r.json()).then(history => {
+            messages.innerHTML = '';
+            history.forEach(addMessage);
+            roomStatus.textContent = 'Joined room: ' + currentRoom;
+        });
+    }
+
+    function addMessage(message) {
+        const el = document.createElement('div');
+        el.className = 'message';
+        el.innerHTML = '<span class="meta">' + message.sender + ' · ' + new Date(message.createdAt).toLocaleTimeString() + '</span><br>' + message.content;
+        messages.appendChild(el);
+        messages.scrollTop = messages.scrollHeight;
+    }
+
+    function connectSocket() {
+        if (!token) return;
+        const socket = new SockJS('/ws');
+        stompClient = Stomp.over(socket);
+        stompClient.debug = null;
+        stompClient.connect({ Authorization: 'Bearer ' + token }, () => {
+            wsStatus.textContent = 'WebSocket connected';
+            sendBtn.disabled = false;
+            joinRoom();
+        }, () => {
+            wsStatus.textContent = 'Connection failed';
+            sendBtn.disabled = true;
+        });
+    }
+
+    document.getElementById('registerBtn').addEventListener('click', register);
+    document.getElementById('loginBtn').addEventListener('click', login);
+    document.getElementById('createRoomBtn').addEventListener('click', createRoom);
+    document.getElementById('joinRoomBtn').addEventListener('click', joinRoom);
+    document.getElementById('sendBtn').addEventListener('click', () => {
+        if (!stompClient || !stompClient.connected) return;
+        const sender = senderEl.value.trim() || 'guest';
+        const content = document.getElementById('content').value.trim();
+        if (!content) return;
+        stompClient.send('/app/chat.send', {}, JSON.stringify({ roomName: currentRoom, sender, content }));
+        document.getElementById('content').value = '';
+    });
+</script>
+</body>
+</html>

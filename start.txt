@@ -1,0 +1,61 @@
+Third-stage Java WebSocket chat with users, JWT and room ownership
+====================================================================
+
+Purpose
+-------
+
+This demo builds on the earlier room-based chat and adds:
+
+- user registration and login
+- JWT generation and verification
+- per-room ownership metadata
+- room creation API and room list
+- room messages delivered via STOMP and stored in a local H2 database
+- a simple browser UI to join a room and send messages
+
+This is still educational code. Safety defaults are simplified and not production-grade.
+
+Architecture
+------------
+
+- `AuthController` handles `/api/auth/register` and `/api/auth/login`.
+- `JwtTokenService` generates signed JWT values.
+- `JwtAuthenticationFilter` checks the `Authorization: Bearer ...` header for REST and simple WebSocket auth flows.
+- `RoomController` lets authenticated users create rooms and list existing rooms.
+- `ChatMessageService` validates room names and payloads, persists message records, broadcasts to `/topic/rooms/{roomName}`.
+- `ChatWebSocketController` exposes `/app/chat.send`.
+- `index.html` is a demo page for login, room create/join, and sending messages.
+
+Run locally
+-----------
+
+```bash
+./gradlew bootRun
+```
+
+Open `http://localhost:8080/` and do the following:
+
+1. Register a user with username/password.
+2. Log in to receive a JWT.
+3. Create room or join an existing room.
+4. Send messages; each room subscribes to its own channel.
+
+What is still intentionally simple
+---------------------------------
+
+- No CSRF protection for browser demo flows.
+- No refresh-token flow.
+- No database migrations strategy.
+- No fine-grained room ACL beyond simple owner metadata.
+- H2 is used instead of Postgres, to keep the learning setup lightweight.
+
+Next upgrades after this stage
+-----------------------------
+
+- multi-room ACLs and permissions (`owner`, `admin`, `member`)
+- pagination for room messages
+- refresh tokens and rotation
+- secure WebSocket auth using JWT handshake validation
+- OpenAPI/Swagger docs
+- Redis/RabbitMQ broker for cluster support
+- production TLS and secret management
